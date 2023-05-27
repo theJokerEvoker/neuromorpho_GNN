@@ -16,7 +16,9 @@ from torch_scatter import scatter
 from utils.utils import build_spanning_tree_edge, find_higher_order_neighbors, add_self_loops
 from sklearn.metrics import r2_score
 from sklearn.metrics import roc_auc_score
+from sklearn.metrics import confusion_matrix
 from sklearn.metrics import classification_report
+from sklearn.preprocessing import normalize
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -68,12 +70,12 @@ def load_data(args):
         valid_test_split = int( int(args.split[1]) / 10 * len(dataset) )
 
     elif args.dataset == 'NeuroMorpho':
-        if os.path.exists('./SGMP_code-main/data/NeuroMorpho/neuro.pkl'):
-            with open('./SGMP_code-main/data/NeuroMorpho/neuro.pkl', 'rb') as file:
+        if os.path.exists('./SGMP_code-main/data/NeuroMorpho/neuro_cell_human.pkl'):
+            with open('./SGMP_code-main/data/NeuroMorpho/neuro_cell_human.pkl', 'rb') as file:
                 dataset = pkl.load(file)
         else:
             dataset = process_swc_files()
-            with open('./SGMP_code-main/data/NeuroMorpho/neuro.pkl', 'wb') as file:
+            with open('./SGMP_code-main/data/NeuroMorpho/neuro_cell_human.pkl', 'wb') as file:
                 pkl.dump(dataset, file)
 
         train_valid_split = int( int(args.split[0]) / 10 * len(dataset) )
@@ -142,34 +144,42 @@ def read_swc_file(filename):
 
 
 def process_swc_files():
-    directory = './SGMP_code-main/data/NeuroMorpho/rat'
+    directory = './SGMP_code-main/data/NeuroMorpho/human'
+
+    possible_classes = ['glia', 'interneuron', 'long-range non-principal gabaergic', 'principal cell', 'sensory', 'null']
 
     problem_data = []
 
     brain_region_list = []
-    with os.scandir(directory) as data_folder:
-        for file in data_folder:
-            if file.name.endswith('.swc') and file.is_file():
-                response = requests.get('https://neuromorpho.org/api/neuron/name/' + file.name.split('.swc', 1)[0])
+    # with os.scandir(directory) as data_folder:
+    #     for file in data_folder:
+    #         if file.name.endswith('.swc') and file.is_file():
+    #             response = requests.get('https://neuromorpho.org/api/neuron/name/' + file.name.split('.swc', 1)[0])
 
-                if not response.ok:
-                    print('Response not ok: ' + str(file.name))
+    #             if not response.ok:
+    #                 print('Response not ok: ' + str(file.name))
 
-                # Parsing requested metadata text to find primary brain region
-                try:
-                    split1 = response.text.split("\"brain_region\":", 1)[1]
-                    split1 = split1.split(",\"", 1)[0]
-                    split1 = split1.strip("\"[]").lower()
-                except:
-                    e = sys.exc_info()
-                    print(e)
-                    print('Response split not working: '+ str(file.name))
+    #             # Parsing requested metadata text to find primary brain region
+    #             try:
+    #                 split1 = response.text.split("\"brain_region\":", 1)[1]
+    #                 split1 = split1.split(",\"", 1)[0]
+    #                 split1 = split1.strip("\"[]").lower()
+    #             except:
+    #                 e = sys.exc_info()
+    #                 print(e)
+    #                 print('Response split not working 166: '+ str(file.name))
+    #                 problem_data.append('Response split fail 166: ' + str(file.name))
+    #                 continue
 
-                # Add parsed brain region to list
-                brain_region_list.append(split1)
+    #             # Add parsed brain region to list
+    #             brain_region_list.append(split1)
 
-    # Removing duplicates from brain region list
-    brain_region_list = list(set(brain_region_list))
+    # # Removing duplicates from brain region list
+    # brain_region_list = list(set(brain_region_list))
+
+    with open('./SGMP_code-main/out_count_class_cell_human_2', 'r') as file:
+        for line in file:
+            brain_region_list.append(line.split(':')[0].lower())
 
     # Writing .txt file of brain region class mappings, to be used later in constructing y
     brain_region_list.sort()
@@ -188,10 +198,10 @@ def process_swc_files():
                     neuron_arr = read_swc_file(file_name)
                 # If error occurs, add file_name to list and keep going
                 except:
-                    print('read_swc_file() faile: ')
+                    print('read_swc_file() fail: ')
                     e = sys.exc_info()
                     print(e)
-                    problem_data.append(file_name)
+                    problem_data.append('read_swc_fail: ' + str(file_name))
                     continue
 
                 # Dealing with pos
@@ -224,12 +234,56 @@ def process_swc_files():
                 new_y = [0]
 
                 response = requests.get('https://neuromorpho.org/api/neuron/name/' + file.name.split('.swc', 1)[0])
-                split1 = response.text.split("\"brain_region\":", 1)[1]
-                split1 = split1.split(",\"", 1)[0]
-                split1 = split1.strip("\"[]").lower()
 
-                new_y[0] = brain_region_list.index(split1)
-                new_y = [new_y]
+                if not response.ok:
+                    print('Response not ok: ' + str(file.name))
+
+                # try:
+                #     split1 = response.text.split("\"brain_region\":", 1)[1]
+                #     split1 = split1.split(",\"", 1)[0]
+                #     split1 = split1.strip("\"[]").lower()
+                # except:
+                #     e = sys.exc_info()
+                #     print(e)
+                #     print('Response split not working 239: ' + str(file_name))
+                #     problem_data.append('Response split fail 239: ' + str(file_name))
+                #     continue
+
+                # Parsing requested metadata text to find primary cell type
+                try:
+                    split1 = response.text.split("\"cell_type\":", 1)[1]
+                    split1 = split1.split("],\"", 1)[0]
+                    split1 = split1.split(",")
+                    split1 = [x.strip('\"[]').lower() for x in split1]
+
+                    if split1[0] in possible_classes:
+                        cell_class = split1[0]
+                    elif split1[-1] in possible_classes:
+                        cell_class = split1[-1]
+                    else:
+                        for i in split1:
+                            if i in possible_classes:
+                                cell_class = i
+                                break
+                        else:
+                            print('Class not found: ' + str(file.name))
+                            continue
+                except:
+                    e = sys.exc_info()
+                    print(e)
+                    print('Response split not working 252: ' + str(file_name))
+                    problem_data.append('Response split fail 252: ' + str(file_name))
+                    continue
+
+                try:
+                    new_y[0] = brain_region_list.index(cell_class)
+                    new_y = [new_y]
+                except:
+                    e = sys.exc_info()
+                    print(e)
+                    print('Cannot find corresponding brain region 276: ' + str(file_name))
+                    problem_data.append('Cannot find corresponding brain region 276: ' + str(file_name))
+                    continue
 
                 # Initialize Data object with respective tensors
                 new_data = Data(
@@ -294,7 +348,7 @@ def main(data, args):
 
     # Special case for NeuroMorpho
     if args.dataset == 'NeuroMorpho':
-        with open('./SGMP_code-main/class_mapping.txt', 'r') as file:
+        with open('./SGMP_code-main/out_count_class_cell_human_2', 'r') as file:
             lines = file.readlines()
         output_channels = len(lines)
         
@@ -303,6 +357,12 @@ def main(data, args):
     if args.model == 'GIN':
         from models.GIN import GINNet
         net = GINNet(input_channels_node, hidden_channels, output_channels, readout=readout, eps=0., num_layers=args.num_layers)
+    elif args.model == 'GCN':
+        from models.GCN import GCNNet
+        net = GCNNet(input_channels_node, hidden_channels, output_channels, readout=readout, num_layers=args.num_layers)
+    elif args.model == 'PointNetraw':
+        from models.PointNetraw import PointNetraw
+        net = PointNetraw(input_channels_node, hidden_channels, output_channels, readout=readout, num_layers=args.num_layers)
     elif args.model == 'GAT':
         from models.GAT import GATNet
         net = GATNet(input_channels_node, hidden_channels, output_channels, readout=readout, num_layers=args.num_layers)
@@ -368,8 +428,8 @@ def main(data, args):
             x, pos, edge_index, batch, y = x.to(device), pos.to(device), edge_index.to(device), batch.to(device), y.to(device)
             if args.model == 'SGMP':
                 edge_index, _ = add_self_loops(edge_index, num_nodes=num_nodes) # add self loop to avoid crash on specific data point with longest path < 3
-                _, _, edge_index_3rd, _, _, _, _, _ = find_higher_order_neighbors(edge_index, num_nodes, order=3)
-                out = model(x, pos, batch, edge_index_3rd)
+                _, edge_index_1st = find_higher_order_neighbors(edge_index, num_nodes, order=1)
+                out = model(x, pos, batch, edge_index_1st)
             else:
                 out = model(x, pos, edge_index, batch)
                 
@@ -383,7 +443,7 @@ def main(data, args):
 
     def test(loader, model, args):
         model.eval()
-        y_hat, y_true = [], []
+        y_hat, y_true, y_probs = [], [], []
         loss_total, total_graph = 0, 0
         for data in loader:  # Iterate in batches over the training/test dataset.
             x, pos, edge_index, batch = data.x.float(), data.pos, data.edge_index, data.batch
@@ -400,8 +460,8 @@ def main(data, args):
             x, pos, edge_index, batch, y = x.to(device), pos.to(device), edge_index.to(device), batch.to(device), y.to(device)
             if args.model == 'SGMP':
                 edge_index, _ = add_self_loops(edge_index, num_nodes=num_nodes, fill_value=-1.)
-                _, _, edge_index_3rd, _, _, _, _, _ = find_higher_order_neighbors(edge_index, num_nodes, order=3)
-                out = model(x, pos, batch, edge_index_3rd)
+                _, edge_index_1st = find_higher_order_neighbors(edge_index, num_nodes, order=1)
+                out = model(x, pos, batch, edge_index_1st)
             else:
                 out = model(x, pos, edge_index, batch)
                 
@@ -418,7 +478,22 @@ def main(data, args):
                 y_hat += list(out.cpu().detach().numpy().reshape(-1))
             y_true += list(y.cpu().detach().numpy().reshape(-1))
 
-        return loss_total/total_graph, y_hat, y_true
+            # L1 norm for out
+            out_data = out.detach().cpu().numpy()
+            min_values = np.min(out_data, axis=1)
+            temp = out_data - min_values[:, np.newaxis]
+            # print(temp)
+            # print('\n')
+            row_sums = temp.sum(axis=1)
+            normalized_out = temp / row_sums[:, np.newaxis]
+
+            for i in normalized_out:
+                y_probs.append(list(i))
+            # print(normalized_out)
+            # print(np.sum(normalized_out))
+            # print('\n')
+
+        return loss_total/total_graph, y_hat, y_true, y_probs
             
     with open(log_file, 'a') as f:
         print(f"Epoch, Valid loss, Valid score, --- %s seconds ---", file=f) 
@@ -431,15 +506,21 @@ def main(data, args):
         train(train_loader, model, args)
         
         if epoch % args.test_per_round == 0:
-            valid_loss, yhat_valid, ytrue_valid = test(valid_loader, model, args)
+            valid_loss, yhat_valid, ytrue_valid, yhat_probs = test(valid_loader, model, args)
             valid_score = measure(ytrue_valid, yhat_valid)
+            # print(ytrue_valid)
+            # print(len(ytrue_valid))
+            # print(yhat_probs)
+            # print(len(yhat_probs))
+            labels = np.arange(np.shape(yhat_probs)[1])
+            valid_roc_score = roc_auc_score(ytrue_valid, yhat_probs, multi_class='ovo', labels=labels)
 
             if epoch >= 100:
                 lr = scheduler.optimizer.param_groups[0]['lr']
                 scheduler.step(valid_loss)
 
             with open(log_file, 'a') as f:
-                print(f"{epoch:03d}, {valid_loss:.4f}, {valid_score:.4f} ,{(time.time() - start_time):.4f}", file=f) 
+                print(f"{epoch:03d}, {valid_loss:.4f}, {valid_score:.4f}, {valid_roc_score:.4f}, {(time.time() - start_time):.4f}", file=f) 
 
             if task == 'regression':
                 if valid_score < best_valid_score:
@@ -450,33 +531,61 @@ def main(data, args):
                     best_valid_score = valid_score
                     best_model = copy.deepcopy(model)
                     
-    train_loss, yhat_train, ytrue_train = test(train_loader, model, args)
+    train_loss, yhat_train, ytrue_train, yhat_probs = test(train_loader, model, args)
     train_score = measure(ytrue_train, yhat_train)
-    valid_loss, yhat_valid, ytrue_valid = test(valid_loader, model, args)
+    labels = np.arange(np.shape(yhat_probs)[1])
+    train_roc_score = roc_auc_score(ytrue_train, yhat_probs, multi_class='ovo', labels=labels)
+    valid_loss, yhat_valid, ytrue_valid, yhat_probs = test(valid_loader, model, args)
     valid_score = measure(ytrue_valid, yhat_valid) 
-    test_loss, yhat_test, ytrue_test = test(test_loader, model, args)
+    valid_roc_score = roc_auc_score(ytrue_valid, yhat_probs, multi_class='ovo', labels=labels)
+    test_loss, yhat_test, ytrue_test, yhat_probs = test(test_loader, model, args)
     test_score = measure(ytrue_test, yhat_test)
+    test_roc_score = roc_auc_score(ytrue_test, yhat_probs, multi_class='ovo', labels=labels)
     with open(result_file, 'a') as f:
         if task == 'regression':
             print(f"Final, Train RMSE: {np.sqrt(train_loss):.4f}, Train MAE: {train_score:.4f}, Valid RMSE: {np.sqrt(valid_loss):.4f}, Valid MAE: {valid_score:.4f}, Test RMSE: {np.sqrt(test_loss):.4f}, Test MAE: {test_score:.4f}", file=f) 
         elif task == 'classification':
-            print(f"Final, Train loss: {train_loss:.4f}, Train acc: {train_score:.4f}, Valid loss: {valid_loss:.4f}, Valid acc: {valid_score:.4f}, Test loss: {test_loss:.4f}, Test acc: {test_score:.4f}", file=f) 
+            print(f"Final, Train loss: {train_loss:.4f}, Train acc: {train_score:.4f}, Train roc: {train_roc_score:.4f}, Valid loss: {valid_loss:.4f}, Valid acc: {valid_score:.4f}, Valid roc: {valid_roc_score:.4f}, Test loss: {test_loss:.4f}, Test acc: {test_score:.4f}, Test roc: {test_roc_score:.4f}", file=f) 
         
     
-    train_loss, yhat_train, ytrue_train = test(train_loader, best_model, args)
+    train_loss, yhat_train, ytrue_train, yhat_probs = test(train_loader, best_model, args)
     train_score = measure(ytrue_train, yhat_train)
-    valid_loss, yhat_valid, ytrue_valid = test(valid_loader, best_model, args)
+    labels = np.arange(np.shape(yhat_probs)[1])
+    train_roc_score = roc_auc_score(ytrue_train, yhat_probs, multi_class='ovo', labels=labels)
+    valid_loss, yhat_valid, ytrue_valid, yhat_probs = test(valid_loader, best_model, args)
     valid_score = measure(ytrue_valid, yhat_valid) 
-    test_loss, yhat_test, ytrue_test = test(test_loader, best_model, args)
+    labels = np.arange(np.shape(yhat_probs)[1])
+    valid_roc_score = roc_auc_score(ytrue_valid, yhat_probs, multi_class='ovo', labels=labels)
+    test_loss, yhat_test, ytrue_test, yhat_probs = test(test_loader, best_model, args)
     test_score = measure(ytrue_test, yhat_test) 
+    labels = np.arange(np.shape(yhat_probs)[1])
+    test_roc_score = roc_auc_score(ytrue_test, yhat_probs, multi_class='ovo', labels=labels)
+
+    with open("test_SGMP_probs.txt", 'w') as file:
+        for i in yhat_probs:
+            file.write(str(i) + '\n')
+
     with open(result_file, 'a') as f:
         if task == 'regression':
             print(f"Best Model, Train RMSE: {np.sqrt(train_loss):.4f}, Train MAE: {train_score:.4f}, Valid RMSE: {np.sqrt(valid_loss):.4f}, Valid MAE: {valid_score:.4f}, Test RMSE: {np.sqrt(test_loss):.4f}, Test MAE: {test_score:.4f}") 
             print(f"Best Model, Train RMSE: {np.sqrt(train_loss):.4f}, Train MAE: {train_score:.4f}, Valid RMSE: {np.sqrt(valid_loss):.4f}, Valid MAE: {valid_score:.4f}, Test RMSE: {np.sqrt(test_loss):.4f}, Test MAE: {test_score:.4f}", file=f) 
         elif task == 'classification':
-            print(f"Best Model, Train loss: {train_loss:.4f}, Train acc: {train_score:.4f}, Valid loss: {valid_loss:.4f}, Valid acc: {valid_score:.4f}, Test loss: {test_loss:.4f}, Test acc: {test_score:.4f}") 
-            print(f"Best Model, Train loss: {train_loss:.4f}, Train acc: {train_score:.4f}, Valid loss: {valid_loss:.4f}, Valid acc: {valid_score:.4f}, Test loss: {test_loss:.4f}, Test acc: {test_score:.4f}", file=f) 
-            
+            print(f"Best Model, Train loss: {train_loss:.4f}, Train acc: {train_score:.4f}, Train roc: {train_roc_score:.4f}, Valid loss: {valid_loss:.4f}, Valid acc: {valid_score:.4f}, Valid roc: {valid_roc_score:.4f}, Test loss: {test_loss:.4f}, Test acc: {test_score:.4f}, Test roc: {test_roc_score:.4f}") 
+            print(f"Best Model, Train loss: {train_loss:.4f}, Train acc: {train_score:.4f}, Train roc: {train_roc_score:.4f}, Valid loss: {valid_loss:.4f}, Valid acc: {valid_score:.4f}, Valid roc: {valid_roc_score:.4f}, Test loss: {test_loss:.4f}, Test acc: {test_score:.4f}, Test roc: {test_roc_score:.4f}", file=f) 
+
+    """
+    with open('SGCN_cell_human_ytrue_test.txt', 'w') as file:
+        for i in ytrue_test:
+            file.write(str(i) + '\n')
+    with open('SGCN_cell_human_yhat_test.txt', 'w') as file:
+        for i in yhat_test:
+            file.write(str(i) + '\n')
+    test_conf_matrix = confusion_matrix(ytrue_test, yhat_test)
+    with open('SGCN_cell_human_conf_matrix.txt', 'w') as file:
+        for i in test_conf_matrix:
+            file.write(str(i) + '\n')
+    """
+
     
 if __name__ == '__main__':
     args = get_args()
