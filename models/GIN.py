@@ -50,7 +50,7 @@ class GINNet(torch.nn.Module):
         super(GINNet, self).__init__()
         self.readout = readout    
         self.node_lin = Sequential(
-            Linear(input_channels_node+3, hidden_channels),
+            Linear(input_channels_node, hidden_channels),
             ReLU(),
             Linear(hidden_channels, hidden_channels)
         )
@@ -87,7 +87,6 @@ class GINNet(torch.nn.Module):
         self.node_lin[2].bias.data.fill_(0)
 
     def forward(self, x, pos, edge_index, batch):
-        x = torch.cat([x, pos], dim=1)
         x = self.node_lin(x)
         for i in range(self.num_layers):
             x = self.convs[i](x, pos, edge_index)
