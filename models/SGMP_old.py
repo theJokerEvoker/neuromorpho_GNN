@@ -38,6 +38,8 @@ class SGMP(torch.nn.Module):
         self.readout = readout
         # the gaussian expansion here is used to help quicker converge
         self.distance_expansion = GaussianSmearing(0.0, cutoff, num_gaussians[0])
+        self.theta_expansion = GaussianSmearing(0.0, PI, num_gaussians[1])
+        self.phi_expansion = GaussianSmearing(0.0, 2*PI, num_gaussians[2])
         self.embedding = Sequential(
             Linear(input_channels_node, hidden_channels),
             torch.nn.ReLU(),
@@ -46,7 +48,7 @@ class SGMP(torch.nn.Module):
         
         self.interactions = ModuleList()
         for _ in range(num_interactions):
-            block = SPNN(hidden_channels, num_gaussians, self.distance_expansion, input_channels=hidden_channels)
+            block = SPNN(hidden_channels, num_gaussians, self.distance_expansion, self.theta_expansion, self.phi_expansion, input_channels=hidden_channels)
             self.interactions.append(block)
 
         self.lin1 = Linear(hidden_channels, hidden_channels // 2)
@@ -67,17 +69,61 @@ class SGMP(torch.nn.Module):
         x = self.embedding(x)
         
         distances = {}
-        i, j = edge_index_3rd
+        thetas = {}
+        phis = {}
+        i, j, k, p = edge_index_3rd
         i_to_j_dis = (pos[j] - pos[i]).norm(p=2, dim=1)
+        k_to_j_dis = (pos[k] - pos[j]).norm(p=2, dim=1)
+        p_to_j_dis = (pos[p] - pos[j]).norm(p=2, dim=1)
         distances[1] = i_to_j_dis
+        distances[2] = k_to_j_dis
+        distances[3] = p_to_j_dis
+        theta_ijk = get_angle(pos[j] - pos[i], pos[k] - pos[j])
+        theta_ijp = get_angle(pos[j] - pos[i], pos[p] - pos[j])
+        thetas[1] = theta_ijk
+        thetas[2] = theta_ijp
+
+        v1 = torch.cross(pos[j] - pos[i], pos[k] - pos[j], dim=1)
+        v2 = torch.cross(pos[j] - pos[i], pos[p] - pos[j], dim=1)
+        phi_ijkp = get_angle(v1, v2)
+        vn = torch.cross(v1, v2, dim=1)
+        flag = torch.sign((vn * (pos[j]- pos[i])).sum(dim=1))
+        phis[1] = phi_ijkp * flag
             
         for interaction in self.interactions:
             x = x + interaction(
                 x,
                 distances,
+                thetas,
+                phis,
                 edge_index_3rd,
                )
         
+        # with open("test_model_params.txt", "a") as f:
+        #     print("distances: {distances}\n\n", file=f)
+        #     print("thetas: {thetas}\n\n", file=f)
+        #     print("phis: {phis}\n\n", file=f)
+        #     print("-------------------------\n\n", file=f)
+
+        # for key, values in distances:
+        #     if True in torch.isnan(values):
+        #         print("distances: {distances}\n\n", file=f)
+
+        # for key, values in distances.items():
+        #     bob = torch.isnan(values)
+        #     torch.set_printoptions(threshold=10_000)
+        #     print(values.data)
+        #     print(bob.data)
+        #     torch.set_printoptions(profile='default')
+        #     if True in bob:
+        #         print(f"distances: {values}\n\n")
+        # for key, values in thetas.items():
+        #     if True in torch.isnan(values):
+        #         print(f"thetas: {values}\n\n")
+        # for key, values in phis.items():
+        #     if True in torch.isnan(values):
+        #         print(f"phis: {phis}\n\n")
+
         if batch is None:
             batch = torch.zeros(len(x), dtype=torch.long, device=x.device)
             
@@ -95,11 +141,13 @@ class SGMP(torch.nn.Module):
     
 
 class SPNN(torch.nn.Module):
-    def __init__(self, hidden_channels, num_gaussians, distance_expansion, input_channels=None, readout='add'):
+    def __init__(self, hidden_channels, num_gaussians, distance_expansion, theta_expansion, phi_expansion, input_channels=None, readout='add'):
         super(SPNN, self).__init__()
         
         self.readout = readout
         self.distance_expansion = distance_expansion
+        self.theta_expansion = theta_expansion
+        self.phi_expansion = phi_expansion
         
         self.mlps_dist = ModuleList()
         mlp_1st = Sequential(
@@ -122,7 +170,7 @@ class SPNN(torch.nn.Module):
         self.mlps_dist.append(mlp_3rd)
             
         self.combine = Sequential(
-                Linear(hidden_channels*5, hidden_channels*4),
+                Linear(hidden_channels*7, hidden_channels*4),
                 torch.nn.ReLU(),
                 Linear(hidden_channels*4, hidden_channels*2),
                 torch.nn.ReLU(),
@@ -145,21 +193,35 @@ class SPNN(torch.nn.Module):
     def forward(self,
             x, 
             distances,
+            thetas,
+            phis,
             edge_index_3rd=None,
            ):
-        i, j = edge_index_3rd
+        i, j, k, p = edge_index_3rd
 
         node_attr_0st = x[i]
         node_attr_1st = x[j]
+        node_attr_2nd = x[k]
+        node_attr_3rd = x[p]
         geo_encoding_1st = self.mlps_dist[0](
             self.distance_expansion(distances[1])
+         )
+        geo_encoding_2nd = self.mlps_dist[1](
+            torch.cat([self.distance_expansion(distances[2]), self.theta_expansion(thetas[1])], dim=-1)
+         )
+        geo_encoding_3rd = self.mlps_dist[2](
+            torch.cat([self.distance_expansion(distances[3]), self.theta_expansion(thetas[2]), self.phi_expansion(phis[1])], dim=-1)
          )
 
         concatenated_vector = torch.cat(
             [
                 node_attr_0st,
                 node_attr_1st,
-                geo_encoding_1st 
+                node_attr_2nd,
+                node_attr_3rd,
+                geo_encoding_1st, 
+                geo_encoding_2nd, 
+                geo_encoding_3rd, 
             ],
             dim=-1
         )            
