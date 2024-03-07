@@ -1,4 +1,4 @@
 # NeuroMorpho_GNN
-Neuron classfication with neural cell data from NeuroMorpho.org using graph neural networks. Models and utils taken from @rollingstonezz at https://github.com/rollingstonezz/SGMP_code. Base scripts, including main_base.py, modified from scripts developed by @rollingstonezz. Used with permission.
+Neuron classfication with neural cell data from NeuroMorpho.org and graph attribute prediction of river flow networks from the National Hydrography Datset (NHD) using graph neural networks. 
 
-
+Adapted from @rollingstonezz at https://github.com/rollingstonezz/SGMP_code. Used with permission.
